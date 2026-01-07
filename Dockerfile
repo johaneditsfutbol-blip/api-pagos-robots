@@ -1,14 +1,18 @@
 FROM ghcr.io/puppeteer/puppeteer:21.5.0
 
-# Usamos usuario root para evitar problemas de permisos al descargar imagenes temporales
+# Usamos root para poder instalar dependencias sin problemas de permisos
 USER root
 
 WORKDIR /usr/src/app
 
-# Copiamos archivos
-COPY package*.json ./
-RUN npm ci
+# Copiamos SOLO el package.json primero
+COPY package.json ./
+
+# USAMOS 'npm install' (Es más seguro que 'ci' si no tienes el lockfile)
+RUN npm install
+
+# Copiamos el resto de los archivos (index.js, etc)
 COPY . .
 
-# Comando de arranque
+# Comando para iniciar
 CMD [ "node", "index.js" ]
