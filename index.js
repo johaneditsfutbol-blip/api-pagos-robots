@@ -280,7 +280,6 @@ async function iniciarSistemaIcaro() {
     }
 }
 
-// LÓGICA ICARO
 async function registrarPagoWizard(idCliente, datos) {
     if (!browserIcaro) { console.error("❌ Navegador Icaro no listo."); return; }
     console.log(`\n🤖 --- [ICARO] PAGO ID: ${idCliente} ---`);
@@ -315,16 +314,47 @@ async function registrarPagoWizard(idCliente, datos) {
         if (!wFrame) { await esperar(3000); wFrame = await encontrarFrameDelWizard(page); }
         if (!wFrame) throw new Error("No se detectó el formulario.");
 
-        // --- PASO 1 ---
-        console.log("   1️⃣ Paso 1: Servicio");
-        await wFrame.evaluate(() => {
+        // --- PASO 1: SELECCIÓN ESTRICTA POR DIRECCIÓN ---
+        console.log(`   1️⃣ Paso 1: Buscando coincidencia exacta con: "${datos.direccion}"`);
+        
+        const resultadoSeleccion = await wFrame.evaluate((textoA_Buscar) => {
             const el = document.querySelector('#id_sc_field_id_servicio');
-            if (el && el.options[1]) {
-                el.value = el.options[1].value;
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                el.dispatchEvent(new Event('blur', { bubbles: true }));
+            if (!el) return { exito: false, msg: "Error interno: Select no encontrado" };
+
+            // 1. Validar que se envió dirección
+            if (!textoA_Buscar || textoA_Buscar.trim() === "") {
+                return { exito: false, msg: "ABORTADO: No se envió el dato 'direccion' en la solicitud." };
             }
-        });
+
+            // 2. Buscar coincidencia (CONTIENE EXACTO)
+            let encontrado = false;
+            for (let i = 0; i < el.options.length; i++) {
+                // Verificamos si el texto de la opción CONTIENE el texto buscado
+                if (el.options[i].text.includes(textoA_Buscar)) {
+                    el.selectedIndex = i;
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    encontrado = true;
+                    return { exito: true, opcion: el.options[i].text };
+                }
+            }
+
+            // 3. Si llega aquí, es que no encontró nada
+            return { exito: false, msg: `ABORTADO: Ninguna opción contiene "${textoA_Buscar}"` };
+
+        }, datos.direccion);
+
+        // SI FALLÓ, PARAMOS TODO AQUÍ
+        if (!resultadoSeleccion.exito) {
+            const errorMsg = `❌ ${resultadoSeleccion.msg}`;
+            console.error(errorMsg);
+            // Notificamos el error al WhatsApp y cerramos
+            await notificarBuilderBot({ numero: datos.numero, mensaje: errorMsg });
+            await page.close();
+            return; // <--- SE ACABÓ, NO REGISTRA PAGO
+        }
+
+        console.log(`      ✅ Servicio Seleccionado: "${resultadoSeleccion.opcion}"`);
         await esperar(2000); 
         await clickPorTexto(wFrame, 'Próximo');
         await esperar(4000);
@@ -341,7 +371,7 @@ async function registrarPagoWizard(idCliente, datos) {
         // --- PASO 3 ---
         console.log("   3️⃣ Paso 3: Datos Financieros");
         await escribirBlindado(page, wFrame, 'Monto', datos.monto);
-        console.log("         🛑 CUARENTENA: Esperando 8s...");
+        console.log("          🛑 CUARENTENA: Esperando 8s...");
         await esperar(8000); 
         await escribirBlindado(page, wFrame, 'Referencia', datos.referencia);
         await esperar(2000);
@@ -360,16 +390,17 @@ async function registrarPagoWizard(idCliente, datos) {
         let fin = await clickPorTexto(wFrame, 'Agregar');
         if (!fin) fin = await clickPorTexto(wFrame, 'Finalizar');
         
-        console.log("      CLICK FINAL REALIZADO.");
+        console.log("       CLICK FINAL REALIZADO.");
         await esperar(5000); 
         await page.close();
 
-        // ===> WEBHOOK <===
+        // ===> WEBHOOK ÉXITO <===
         console.log("   ✨ Notificando a BuilderBot...");
         await notificarBuilderBot(datos);
 
     } catch (e) {
         console.error("❌ ERROR EN SEGUNDO PLANO ICARO:", e.message);
+        await notificarBuilderBot({ numero: datos.numero, mensaje: `Error técnico: ${e.message}` });
         if(page && !page.isClosed()) await page.close();
     }
 }
