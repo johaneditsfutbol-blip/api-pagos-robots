@@ -796,5 +796,5 @@ app.listen(PORT, async () => {
         await iniciarSistemaVidanet();
         console.log("   ✅ Mantenimiento finalizado. Listos de nuevo.");
 
-    }, 300000); // 300,000 ms = 5 minutos exactos
+    }, 600000); // 600,000 ms = 10 minutos exactos
 });
