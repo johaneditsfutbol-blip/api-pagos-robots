@@ -34,6 +34,14 @@ const BUILDERBOT = {
     token: 'bb-3441000d-f490-47bf-9c5a-273409fad976'
 };
 
+// --- NUEVO: CONFIGURACIÓN PARA PUSH (SUPABASE + EXPO) ---
+const PUSH_CONFIG = {
+    supabaseUrl: "https://qyvmupeeldyggghegnke.supabase.co/rest/v1/push_tokens",
+    // ⚠️⚠️ IMPORTANTE: PEGA AQUÍ TU 'ANON KEY' DE SUPABASE ⚠️⚠️
+    supabaseKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF5dm11cGVlbGR5Z2dnaGVnbmtlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIxNzc1ODMsImV4cCI6MjA3Nzc1MzU4M30.srvwDtXyKvi9_CyuFfiJkrkX_kZz6lXEaqBW3F3A5Jo", 
+    expoUrl: "https://exp.host/--/api/v2/push/send"
+};
+
 // --- VARIABLES DE ESTADO SEPARADAS ---
 let browserIcaro = null;
 let pageIcaroMain = null;
@@ -44,15 +52,13 @@ let pageVidanetDummy = null;
 const esperar = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ==========================================
-// 2. HERRAMIENTA DE NOTIFICACIÓN (UNIFICADA)
+// 2. HERRAMIENTAS DE NOTIFICACIÓN
 // ==========================================
-// Usamos la versión más completa (la del Registrador 1) que soporta imágenes.
 
+// A. NOTIFICACIÓN WHATSAPP (Original)
 function notificarBuilderBot(datos) {
     return new Promise((resolve, reject) => {
         console.log("   🔔 Preparando notificación a BuilderBot...");
-
-        // Soporte para cuando viene solo el numero (Vidanet) o objeto completo (Icaro)
         const numero = datos.numero || datos; 
         
         if (!numero) {
@@ -62,17 +68,12 @@ function notificarBuilderBot(datos) {
         }
 
         const mensajeTexto = datos.mensaje || (typeof datos === 'string' ? datos : "Proceso finalizado.");
-        
-        const mensajeObj = {
-            "content": mensajeTexto
-        };
+        const mensajeObj = { "content": mensajeTexto };
 
-        // Si viene mediaUrl (Icaro), lo agregamos
         if (datos.mediaUrl && datos.mediaUrl.startsWith('http')) {
             mensajeObj.mediaUrl = datos.mediaUrl;
         }
 
-        // Formato OBJETO (Correcto)
         const payload = JSON.stringify({
             "number": String(numero).replace(/\D/g, ''),
             "messages": mensajeObj, 
@@ -80,7 +81,6 @@ function notificarBuilderBot(datos) {
         });
 
         console.log(`   📦 Payload enviado: ${payload}`);
-
         const urlParts = new URL(BUILDERBOT.url);
         
         const options = {
@@ -115,6 +115,75 @@ function notificarBuilderBot(datos) {
         req.write(payload);
         req.end();
     });
+}
+
+// B. --- NUEVA FUNCIÓN: NOTIFICACIÓN PUSH (SUPABASE -> EXPO) ---
+async function gestionarNotificacionPush(idCliente, datos, esExito, mensajeDetalle) {
+    try {
+        console.log(`   📱 [PUSH] Iniciando proceso para: ${idCliente} (${esExito ? 'EXITO' : 'FALLO'})`);
+
+        // 1. OBTENER TOKEN DE SUPABASE
+        // Usamos el ID (Icaro) o Cédula (Vidanet) para buscar
+        const urlGet = `${PUSH_CONFIG.supabaseUrl}?codigo_cliente=ilike.*${idCliente}*&select=expo_push_token`;
+        
+        const respSupabase = await fetch(urlGet, {
+            method: 'GET',
+            headers: {
+                'apikey': PUSH_CONFIG.supabaseKey,
+                'Authorization': `Bearer ${PUSH_CONFIG.supabaseKey}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!respSupabase.ok) throw new Error(`Error conexión Supabase: ${respSupabase.statusText}`);
+        
+        const dataSupabase = await respSupabase.json();
+        
+        // Verificamos si existe el token
+        if (!dataSupabase || dataSupabase.length === 0 || !dataSupabase[0].expo_push_token) {
+            console.log("   ⚠️ [PUSH] Cliente sin token registrado en App. Se omite notificación.");
+            return;
+        }
+
+        const pushToken = dataSupabase[0].expo_push_token;
+
+        // 2. PREPARAR MENSAJE SEGÚN RESULTADO
+        let titulo, cuerpo;
+        
+        if (esExito) {
+            titulo = "✅ PAGO CONFIRMADO";
+            cuerpo = `\n🆔 REF: #${datos.referencia}\n📅 FECHA: ${datos.fecha || new Date().toLocaleDateString()}\n💵 MONTO: ${datos.monto || "N/A"}\n\n🚀 Tu servicio será reactivado automáticamente en un lapso de 10 minutos.`;
+        } else {
+            titulo = "❌ PAGO NO PROCESADO";
+            cuerpo = `\n🆔 REF: #${datos.referencia}\n⚠️ MOTIVO: ${mensajeDetalle}\n\nPor favor verifica tu comprobante e intenta nuevamente.`;
+        }
+
+        // 3. ENVIAR A EXPO
+        const bodyExpo = {
+            to: pushToken,
+            title: titulo,
+            body: cuerpo,
+            priority: "high",
+            sound: "default",
+            badge: 1,
+            data: { referencia: datos.referencia, estado: esExito ? 'success' : 'fail' }
+        };
+
+        const respExpo = await fetch(PUSH_CONFIG.expoUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bodyExpo)
+        });
+
+        if (respExpo.ok) {
+            console.log("   🚀 [PUSH] Notificación enviada correctamente.");
+        } else {
+            console.error("   ❌ [PUSH] Error enviando a Expo:", await respExpo.text());
+        }
+
+    } catch (e) {
+        console.error("   ❌ [PUSH] Error general:", e.message);
+    }
 }
 
 // ==========================================
@@ -348,8 +417,12 @@ async function registrarPagoWizard(idCliente, datos) {
         if (!resultadoSeleccion.exito) {
             const errorMsg = `❌ ${resultadoSeleccion.msg}`;
             console.error(errorMsg);
-            // Notificamos el error al WhatsApp y cerramos
+            
             await notificarBuilderBot({ numero: datos.numero, mensaje: errorMsg });
+            
+            // ---> NUEVO: NOTIFICAR FALLO PUSH
+            await gestionarNotificacionPush(idCliente, datos, false, "La dirección del servicio no coincide.");
+            
             await page.close();
             return; // <--- SE ACABÓ, NO REGISTRA PAGO
         }
@@ -398,9 +471,17 @@ async function registrarPagoWizard(idCliente, datos) {
         console.log("   ✨ Notificando a BuilderBot...");
         await notificarBuilderBot(datos);
 
+        // ---> NUEVO: NOTIFICAR ÉXITO PUSH
+        await gestionarNotificacionPush(idCliente, datos, true);
+
     } catch (e) {
         console.error("❌ ERROR EN SEGUNDO PLANO ICARO:", e.message);
+        
         await notificarBuilderBot({ numero: datos.numero, mensaje: `Error técnico: ${e.message}` });
+        
+        // ---> NUEVO: NOTIFICAR FALLO PUSH
+        await gestionarNotificacionPush(idCliente, datos, false, "Ocurrió un error técnico al registrar.");
+        
         if(page && !page.isClosed()) await page.close();
     }
 }
@@ -537,6 +618,7 @@ async function procesarPagoVidanet(datos) {
     console.log(`\n🤖 --- [VIDANET] PROCESO REF: ${datos.referencia} ---`);
     const page = await browserVidanet.newPage();
     let resultadoFinal = "";
+    let esExito = false; // Variable para controlar el PUSH
 
     try {
         await page.goto(CONFIG_VIDANET.url, { waitUntil: 'domcontentloaded' }); 
@@ -615,14 +697,17 @@ async function procesarPagoVidanet(datos) {
         if (textoPantalla.includes("Referencia no encontrada")) {
             console.log("      ❌ Referencia NO encontrada.");
             resultadoFinal = `Hola, Vidanet indica: Referencia no encontrada. Verifica los datos.`;
+            esExito = false;
         } 
         else if (textoPantalla.includes("Detalle de la Transacción") || textoPantalla.includes("Resumen del Pago")) {
             console.log("      ✅ Éxito: Transacción detectada.");
             resultadoFinal = `¡Pago registrado exitosamente en Vidanet! Ref: ${datos.referencia}`;
+            esExito = true;
         } 
         else {
             console.log("      ⚠️ Resultado ambiguo.");
             resultadoFinal = `Proceso finalizado. Verifica saldo. Ref: ${datos.referencia}`;
+            esExito = false; // Ambiguo se trata como posible fallo
         }
 
         await esperar(3000); 
@@ -631,9 +716,15 @@ async function procesarPagoVidanet(datos) {
         // Notificación usando la función compartida
         await notificarBuilderBot({ numero: datos.numero, mensaje: resultadoFinal });
 
+        // ---> NUEVO: NOTIFICAR RESULTADO PUSH (Usando Cédula)
+        await gestionarNotificacionPush(datos.cedula, datos, esExito, resultadoFinal);
+
     } catch (e) {
         console.error("❌ ERROR VIDANET:", e.message);
         await notificarBuilderBot({ numero: datos.numero, mensaje: "Error técnico Vidanet." });
+        
+        // ---> NUEVO: NOTIFICAR FALLO PUSH
+        await gestionarNotificacionPush(datos.cedula, datos, false, "Error de conexión con Vidanet.");
     }
 }
 
@@ -668,7 +759,34 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, async () => {
     console.log(`\n🌍 SERVIDOR UNIFICADO ACTIVO EN PUERTO: ${PORT}`);
-    // Iniciamos ambos motores al arrancar el servidor
+    
+    // 1. Arranque inicial
     await iniciarSistemaIcaro();
     await iniciarSistemaVidanet();
+
+    // 2. CICLO DE REINICIO (CADA 5 MINUTOS)
+    setInterval(async () => {
+        console.log("\n♻️ MANTENIMIENTO: Reiniciando navegadores (Ciclo 5 min)...");
+
+        // A. Cerrar Icaro
+        if (browserIcaro) {
+            try { await browserIcaro.close(); } catch(e) { console.log("   ⚠️ Error cerrando Icaro (ignorable)."); }
+            browserIcaro = null;
+            pageIcaroMain = null;
+        }
+
+        // B. Cerrar Vidanet
+        if (browserVidanet) {
+            try { await browserVidanet.close(); } catch(e) { console.log("   ⚠️ Error cerrando Vidanet (ignorable)."); }
+            browserVidanet = null;
+            pageVidanetDummy = null;
+        }
+
+        // C. Volver a Iniciar (Esto abre y se loguea de nuevo)
+        console.log("   🔄 Re-iniciando sistemas...");
+        await iniciarSistemaIcaro();
+        await iniciarSistemaVidanet();
+        console.log("   ✅ Mantenimiento finalizado. Listos de nuevo.");
+
+    }, 300000); // 300,000 ms = 5 minutos exactos
 });
