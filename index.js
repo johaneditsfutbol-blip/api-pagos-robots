@@ -397,6 +397,14 @@ async function registrarPagoWizard(idCliente, datos) {
 
             // 2. Buscar coincidencia (CONTIENE EXACTO)
             let encontrado = false;
+            // CASO: Direccion no detectada (Seleccionar el primero disponible)
+            if (textoA_Buscar === "No detectada" && el.options.length > 1) {
+                el.selectedIndex = 1;
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new Event('blur', { bubbles: true }));
+                return { exito: true, opcion: "Automática (No detectada)" };
+            }
+
             for (let i = 0; i < el.options.length; i++) {
                 // Verificamos si el texto de la opción CONTIENE el texto buscado
                 if (el.options[i].text.includes(textoA_Buscar)) {
